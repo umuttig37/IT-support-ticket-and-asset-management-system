@@ -1,6 +1,6 @@
-import { ReactNode, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { api } from "./api";
-import type { Asset, DashboardMetrics, Employee, KnowledgeBaseArticle, Ticket, TicketPriority, TicketStatus } from "./types";
+import type { Asset, Category, DashboardMetrics, Employee, KnowledgeBaseArticle, Ticket, TicketPriority, TicketStatus } from "./types";
 
 const metricCards: Array<{ key: keyof DashboardMetrics; label: string; note: string }> = [
   { key: "openTickets", label: "Open tickets", note: "still waiting for resolution" },
@@ -14,19 +14,22 @@ export function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [articles, setArticles] = useState<KnowledgeBaseArticle[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [ticketSearch, setTicketSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [dashboardData, ticketData, assetData, employeeData, knowledgeBaseData] = await Promise.all([
+        const [dashboardData, ticketData, assetData, employeeData, categoryData, knowledgeBaseData] = await Promise.all([
           api.getDashboard(),
           api.getTickets(),
           api.getAssets(),
           api.getEmployees(),
+          api.getCategories(),
           api.getKnowledgeBase()
         ]);
 
@@ -34,6 +37,7 @@ export function App() {
         setTickets(ticketData);
         setAssets(assetData);
         setEmployees(employeeData);
+        setCategories(categoryData);
         setArticles(knowledgeBaseData);
         setSelectedTicket(ticketData[0] ?? null);
       } catch (loadError) {
@@ -45,6 +49,44 @@ export function App() {
 
     void loadData();
   }, []);
+
+  async function handleCreateTicket(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const dueAtValue = String(formData.get("dueAt") ?? "");
+
+    const payload = {
+      title: String(formData.get("title") ?? ""),
+      description: String(formData.get("description") ?? ""),
+      priority: String(formData.get("priority") ?? "medium") as TicketPriority,
+      status: "open" as const,
+      categoryId: Number(formData.get("categoryId") ?? 0) || null,
+      employeeId: Number(formData.get("employeeId") ?? 0) || null,
+      assetId: Number(formData.get("assetId") ?? 0) || null,
+      dueAt: new Date(dueAtValue).toISOString()
+    };
+
+    const createdTicket = await api.createTicket(payload);
+    const nextTickets = [createdTicket, ...tickets];
+    setTickets(nextTickets);
+    setSelectedTicket(createdTicket);
+    setMetrics((current) =>
+      current
+        ? {
+            ...current,
+            openTickets: current.openTickets + 1
+          }
+        : current
+    );
+    event.currentTarget.reset();
+  }
+
+  async function handleTicketSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const ticketData = await api.getTickets(ticketSearch);
+    setTickets(ticketData);
+    setSelectedTicket(ticketData[0] ?? null);
+  }
 
   if (loading) {
     return <div className="p-10 text-slate">Loading ticket data...</div>;
@@ -102,34 +144,96 @@ export function App() {
       </section>
 
       <section className="mx-auto grid max-w-7xl gap-8 px-6 pb-12 xl:grid-cols-[0.95fr_1.25fr]">
-        <Panel title="Active queue" subtitle="Open a ticket and review the latest case details.">
-          <div className="space-y-3">
-            {tickets.map((ticket) => (
-              <button
-                key={ticket.id}
-                className={`w-full rounded-[1.5rem] border p-4 text-left transition ${
-                  selectedTicket?.id === ticket.id
-                    ? "border-amber-300 bg-amber-50/80 shadow-sm"
-                    : "border-stone-200 bg-white hover:border-stone-300 hover:bg-stone-50"
-                }`}
-                type="button"
-                onClick={() => setSelectedTicket(ticket)}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-semibold text-slate">#{ticket.id}</span>
-                  <Badge className={priorityStyles[ticket.priority]}>{humanizePriority(ticket.priority)}</Badge>
-                  <Badge className={statusStyles[ticket.status]}>{humanizeStatus(ticket.status)}</Badge>
-                </div>
-                <h3 className="mt-3 text-lg font-semibold text-stone-900">{ticket.title}</h3>
-                <p className="mt-1 text-sm leading-6 text-slate">{ticket.description}</p>
-                <div className="mt-4 flex items-center justify-between text-sm text-slate">
-                  <span>Due {new Date(ticket.dueAt).toLocaleDateString()}</span>
-                  <span>Updated {new Date(ticket.updatedAt).toLocaleDateString()}</span>
-                </div>
+        <div className="space-y-8">
+          <Panel title="Active queue" subtitle="Open a ticket, review the latest note and update the next action.">
+            <form className="mb-5 flex gap-3" onSubmit={(event) => void handleTicketSearch(event)}>
+              <input
+                className="flex-1 rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-signal focus:bg-white"
+                placeholder="Search by title, user symptom or keyword"
+                value={ticketSearch}
+                onChange={(event) => setTicketSearch(event.target.value)}
+              />
+              <button className="rounded-2xl bg-stone-900 px-5 py-3 font-semibold text-white transition hover:bg-signal" type="submit">
+                Search
               </button>
-            ))}
-          </div>
-        </Panel>
+            </form>
+
+            <div className="space-y-3">
+              {tickets.map((ticket) => (
+                <button
+                  key={ticket.id}
+                  className={`w-full rounded-[1.5rem] border p-4 text-left transition ${
+                    selectedTicket?.id === ticket.id
+                      ? "border-amber-300 bg-amber-50/80 shadow-sm"
+                      : "border-stone-200 bg-white hover:border-stone-300 hover:bg-stone-50"
+                  }`}
+                  type="button"
+                  onClick={() => setSelectedTicket(ticket)}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-slate">#{ticket.id}</span>
+                    <Badge className={priorityStyles[ticket.priority]}>{humanizePriority(ticket.priority)}</Badge>
+                    <Badge className={statusStyles[ticket.status]}>{humanizeStatus(ticket.status)}</Badge>
+                  </div>
+                  <h3 className="mt-3 text-lg font-semibold text-stone-900">{ticket.title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate">{ticket.description}</p>
+                  <div className="mt-4 flex items-center justify-between text-sm text-slate">
+                    <span>Due {new Date(ticket.dueAt).toLocaleDateString()}</span>
+                    <span>Updated {new Date(ticket.updatedAt).toLocaleDateString()}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel title="New support request" subtitle="Capture the issue before it disappears into email or chat.">
+            <form className="space-y-4" onSubmit={(event) => void handleCreateTicket(event)}>
+              <Input name="title" label="Short summary" placeholder="Laptop drops Wi-Fi after docking" />
+              <TextArea
+                name="description"
+                label="What the user is seeing"
+                placeholder="Include symptoms, recent changes and anything already tried."
+              />
+              <div className="grid gap-4 md:grid-cols-2">
+                <Select name="priority" label="Priority" defaultValue="medium">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </Select>
+                <Input name="dueAt" label="Target due time" type="datetime-local" />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Select name="categoryId" label="Issue category" defaultValue="">
+                  <option value="">Select if needed</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </Select>
+                <Select name="employeeId" label="Reported by" defaultValue="4">
+                  <option value="">Unassigned</option>
+                  {employees.map((employee) => (
+                    <option key={employee.id} value={employee.id}>
+                      {employee.fullName}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <Select name="assetId" label="Affected device" defaultValue="">
+                <option value="">No device linked</option>
+                {assets.map((asset) => (
+                  <option key={asset.id} value={asset.id}>
+                    {asset.assetTag} - {asset.manufacturer} {asset.model}
+                  </option>
+                ))}
+              </Select>
+              <button className="w-full rounded-2xl bg-stone-900 px-4 py-3 font-semibold text-white transition hover:bg-signal" type="submit">
+                Create ticket
+              </button>
+            </form>
+          </Panel>
+        </div>
 
         <div className="space-y-8">
           <Panel title="Ticket overview" subtitle="Current owner, affected device and the basic case context.">
@@ -271,6 +375,51 @@ function PanelInset(props: { title: string; subtitle: string; children: ReactNod
 
 function Badge(props: { children: ReactNode; className: string }) {
   return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${props.className}`}>{props.children}</span>;
+}
+
+function Input(props: { label: string; name: string; placeholder?: string; type?: string; defaultValue?: string }) {
+  return (
+    <label className="block">
+      <span className="mb-2 block text-sm font-medium text-slate">{props.label}</span>
+      <input
+        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 outline-none transition focus:border-signal"
+        name={props.name}
+        placeholder={props.placeholder}
+        type={props.type ?? "text"}
+        defaultValue={props.defaultValue}
+        required
+      />
+    </label>
+  );
+}
+
+function TextArea(props: { label: string; name: string; placeholder?: string }) {
+  return (
+    <label className="block">
+      <span className="mb-2 block text-sm font-medium text-slate">{props.label}</span>
+      <textarea
+        className="min-h-28 w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 outline-none transition focus:border-signal"
+        name={props.name}
+        placeholder={props.placeholder}
+        required
+      />
+    </label>
+  );
+}
+
+function Select(props: { label: string; name: string; children: ReactNode; defaultValue: string }) {
+  return (
+    <label className="block">
+      <span className="mb-2 block text-sm font-medium text-slate">{props.label}</span>
+      <select
+        className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 outline-none transition focus:border-signal"
+        name={props.name}
+        defaultValue={props.defaultValue}
+      >
+        {props.children}
+      </select>
+    </label>
+  );
 }
 
 function InfoCard(props: { label: string; value: string }) {
