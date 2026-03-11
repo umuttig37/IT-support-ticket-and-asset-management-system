@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #0f172a;
+  background: #f5f7fb;
+  font-family: "Aptos", "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(217, 119, 6, 0.06), transparent 24%),
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.06), transparent 22%),
+    #f5f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(15, 118, 110, 0.18);
+}
