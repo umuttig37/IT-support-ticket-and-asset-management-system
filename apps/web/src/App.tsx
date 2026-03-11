@@ -1,6 +1,16 @@
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { api } from "./api";
-import type { Asset, Category, DashboardMetrics, Employee, KnowledgeBaseArticle, Ticket, TicketPriority, TicketStatus } from "./types";
+import type {
+  Asset,
+  Category,
+  DashboardMetrics,
+  Employee,
+  KnowledgeBaseArticle,
+  Ticket,
+  TicketComment,
+  TicketPriority,
+  TicketStatus
+} from "./types";
 
 const metricCards: Array<{ key: keyof DashboardMetrics; label: string; note: string }> = [
   { key: "openTickets", label: "Open tickets", note: "still waiting for resolution" },
@@ -8,6 +18,18 @@ const metricCards: Array<{ key: keyof DashboardMetrics; label: string; note: str
   { key: "devicesInStock", label: "In stock", note: "available for swaps or onboarding" },
   { key: "devicesAssigned", label: "Assigned", note: "currently in employee use" }
 ];
+
+const priorityStyles: Record<TicketPriority, string> = {
+  low: "bg-emerald-100 text-emerald-800",
+  medium: "bg-amber-100 text-amber-800",
+  high: "bg-rose-100 text-rose-800"
+};
+
+const statusStyles: Record<TicketStatus, string> = {
+  open: "bg-sky-100 text-sky-800",
+  in_progress: "bg-amber-100 text-amber-800",
+  resolved: "bg-emerald-100 text-emerald-800"
+};
 
 export function App() {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
@@ -17,21 +39,24 @@ export function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [articles, setArticles] = useState<KnowledgeBaseArticle[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [ticketComments, setTicketComments] = useState<TicketComment[]>([]);
   const [ticketSearch, setTicketSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [savingTicket, setSavingTicket] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [dashboardData, ticketData, assetData, employeeData, categoryData, knowledgeBaseData] = await Promise.all([
-          api.getDashboard(),
-          api.getTickets(),
-          api.getAssets(),
-          api.getEmployees(),
-          api.getCategories(),
-          api.getKnowledgeBase()
-        ]);
+        const [dashboardData, ticketData, assetData, employeeData, categoryData, knowledgeBaseData] =
+          await Promise.all([
+            api.getDashboard(),
+            api.getTickets(),
+            api.getAssets(),
+            api.getEmployees(),
+            api.getCategories(),
+            api.getKnowledgeBase()
+          ]);
 
         setMetrics(dashboardData);
         setTickets(ticketData);
@@ -39,7 +64,10 @@ export function App() {
         setEmployees(employeeData);
         setCategories(categoryData);
         setArticles(knowledgeBaseData);
-        setSelectedTicket(ticketData[0] ?? null);
+
+        if (ticketData.length > 0) {
+          await openTicket(ticketData[0].id, ticketData);
+        }
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "Unknown error");
       } finally {
@@ -49,6 +77,13 @@ export function App() {
 
     void loadData();
   }, []);
+
+  async function openTicket(ticketId: number, sourceTickets = tickets) {
+    const detail = await api.getTicket(ticketId);
+    setSelectedTicket(detail.ticket);
+    setTicketComments(detail.comments);
+    setTickets(sourceTickets.map((ticket) => (ticket.id === detail.ticket.id ? detail.ticket : ticket)));
+  }
 
   async function handleCreateTicket(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,7 +104,6 @@ export function App() {
     const createdTicket = await api.createTicket(payload);
     const nextTickets = [createdTicket, ...tickets];
     setTickets(nextTickets);
-    setSelectedTicket(createdTicket);
     setMetrics((current) =>
       current
         ? {
@@ -79,13 +113,62 @@ export function App() {
         : current
     );
     event.currentTarget.reset();
+    await openTicket(createdTicket.id, nextTickets);
   }
 
   async function handleTicketSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const ticketData = await api.getTickets(ticketSearch);
     setTickets(ticketData);
-    setSelectedTicket(ticketData[0] ?? null);
+
+    if (ticketData.length > 0) {
+      await openTicket(ticketData[0].id, ticketData);
+      return;
+    }
+
+    setSelectedTicket(null);
+    setTicketComments([]);
+  }
+
+  async function handleTicketUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTicket) {
+      return;
+    }
+
+    setSavingTicket(true);
+    try {
+      const formData = new FormData(event.currentTarget);
+      const nextTicket = await api.updateTicket(selectedTicket.id, {
+        status: String(formData.get("status")) as TicketStatus,
+        priority: String(formData.get("priority")) as TicketPriority,
+        categoryId: Number(formData.get("categoryId") ?? 0) || null,
+        employeeId: Number(formData.get("employeeId") ?? 0) || null,
+        assetId: Number(formData.get("assetId") ?? 0) || null,
+        dueAt: new Date(String(formData.get("dueAt"))).toISOString()
+      });
+
+      setTickets((current) => current.map((ticket) => (ticket.id === nextTicket.id ? nextTicket : ticket)));
+      setSelectedTicket(nextTicket);
+    } finally {
+      setSavingTicket(false);
+    }
+  }
+
+  async function handleAddComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTicket) {
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const comment = await api.addTicketComment(selectedTicket.id, {
+      authorName: String(formData.get("authorName") ?? "Laura Miettinen"),
+      body: String(formData.get("body") ?? "")
+    });
+
+    setTicketComments((current) => [...current, comment]);
+    event.currentTarget.reset();
   }
 
   if (loading) {
@@ -111,8 +194,8 @@ export function App() {
                 Keep support tickets, device ownership and internal fixes in one place.
               </h1>
               <p className="mt-5 max-w-2xl text-lg leading-8 text-slate">
-                A simple working view for the IT desk: open cases, assigned hardware and common fixes without jumping between
-                spreadsheets, chat messages and separate docs.
+                A simple working view for the IT desk: open cases, assigned hardware, follow-up notes and common fixes without
+                jumping between spreadsheets, chat messages and separate docs.
               </p>
             </div>
 
@@ -168,7 +251,7 @@ export function App() {
                       : "border-stone-200 bg-white hover:border-stone-300 hover:bg-stone-50"
                   }`}
                   type="button"
-                  onClick={() => setSelectedTicket(ticket)}
+                  onClick={() => void openTicket(ticket.id)}
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-semibold text-slate">#{ticket.id}</span>
@@ -192,7 +275,7 @@ export function App() {
               <TextArea
                 name="description"
                 label="What the user is seeing"
-                placeholder="Include symptoms, recent changes and anything already tried."
+                placeholder="Include symptoms, recent changes, what has already been tried and how urgent it feels."
               />
               <div className="grid gap-4 md:grid-cols-2">
                 <Select name="priority" label="Priority" defaultValue="medium">
@@ -236,7 +319,7 @@ export function App() {
         </div>
 
         <div className="space-y-8">
-          <Panel title="Ticket overview" subtitle="Current owner, affected device and the basic case context.">
+          <Panel title="Ticket workspace" subtitle="Status, ownership, due date and notes for the selected case.">
             {selectedTicket ? (
               <div className="space-y-6">
                 <div className="rounded-[1.75rem] border border-stone-200 bg-[linear-gradient(135deg,#fff8ed,#ffffff)] p-5">
@@ -255,30 +338,130 @@ export function App() {
 
                 <div className="grid gap-4 md:grid-cols-3">
                   <InfoCard label="Requester" value={findEmployeeName(employees, selectedTicket.employeeId)} />
+                  <InfoCard label="Category" value={findCategoryName(categories, selectedTicket.categoryId)} />
                   <InfoCard label="Affected asset" value={findAssetName(assets, selectedTicket.assetId)} />
-                  <InfoCard label="Due date" value={new Date(selectedTicket.dueAt).toLocaleString()} />
                 </div>
 
-                <PanelInset title="Related user" subtitle="Employee details and any devices already assigned to them.">
-                  <div className="space-y-4">
-                    <div className="rounded-2xl bg-stone-50 p-4">
-                      <p className="text-base font-semibold text-stone-900">{findEmployeeName(employees, selectedTicket.employeeId)}</p>
-                      <p className="mt-1 text-sm text-slate">{findEmployeeMeta(employees, selectedTicket.employeeId)}</p>
+                <form className="rounded-[1.75rem] border border-stone-200 bg-stone-50 p-5" onSubmit={(event) => void handleTicketUpdate(event)}>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Select name="status" label="Current status" defaultValue={selectedTicket.status}>
+                      <option value="open">Open</option>
+                      <option value="in_progress">In progress</option>
+                      <option value="resolved">Resolved</option>
+                    </Select>
+                    <Select name="priority" label="Priority level" defaultValue={selectedTicket.priority}>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </Select>
+                  </div>
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <Select name="categoryId" label="Category" defaultValue={String(selectedTicket.categoryId ?? "")}>
+                      <option value="">Not assigned</option>
+                      {categories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select name="employeeId" label="Requester" defaultValue={String(selectedTicket.employeeId ?? "")}>
+                      <option value="">Not assigned</option>
+                      {employees.map((employee) => (
+                        <option key={employee.id} value={employee.id}>
+                          {employee.fullName}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <Select name="assetId" label="Affected device" defaultValue={String(selectedTicket.assetId ?? "")}>
+                      <option value="">No linked device</option>
+                      {assets.map((asset) => (
+                        <option key={asset.id} value={asset.id}>
+                          {asset.assetTag} - {asset.manufacturer} {asset.model}
+                        </option>
+                      ))}
+                    </Select>
+                    <Input name="dueAt" label="Due by" type="datetime-local" defaultValue={toDateTimeLocalValue(selectedTicket.dueAt)} />
+                  </div>
+                  <button className="mt-5 w-full rounded-2xl bg-stone-900 px-4 py-3 font-semibold text-white transition hover:bg-signal" type="submit">
+                    {savingTicket ? "Saving changes..." : "Save ticket changes"}
+                  </button>
+                </form>
+
+                <div className="grid gap-5 xl:grid-cols-[1fr_0.95fr]">
+                  <div className="rounded-[1.75rem] border border-stone-200 bg-white p-5">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-stone-900">Timeline</h3>
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate">Case notes</p>
                     </div>
-                    <div className="space-y-2">
-                      {assignedAssetsForSelectedEmployee.length > 0 ? (
-                        assignedAssetsForSelectedEmployee.map((asset) => (
-                          <div key={asset.id} className="rounded-2xl border border-stone-200 p-3">
-                            <p className="font-medium text-stone-900">{asset.assetTag} - {asset.assetType}</p>
-                            <p className="mt-1 text-sm text-slate">{asset.manufacturer} {asset.model} - {asset.healthStatus}</p>
-                          </div>
+                    <div className="mt-4 space-y-3">
+                      {ticketComments.length > 0 ? (
+                        ticketComments.map((comment) => (
+                          <article key={comment.id} className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="font-medium text-stone-900">{comment.authorName}</p>
+                              <p className="text-xs text-slate">{new Date(comment.createdAt).toLocaleString()}</p>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-slate">{comment.body}</p>
+                          </article>
                         ))
                       ) : (
-                        <p className="text-sm text-slate">No assigned devices for this employee.</p>
+                        <p className="text-sm text-slate">No notes on this ticket yet.</p>
                       )}
                     </div>
                   </div>
-                </PanelInset>
+
+                  <div className="rounded-[1.75rem] border border-stone-200 bg-white p-5">
+                    <h3 className="text-lg font-semibold text-stone-900">Log a new note</h3>
+                    <p className="mt-1 text-sm text-slate">Add troubleshooting steps, user updates or the next action.</p>
+                    <form className="mt-4 space-y-4" onSubmit={(event) => void handleAddComment(event)}>
+                      <Input name="authorName" label="Logged by" defaultValue="Laura Miettinen" />
+                      <TextArea name="body" label="Note" placeholder="Example: cleared cached credentials, tested sign-in again and waiting for the user to confirm." />
+                      <button className="w-full rounded-2xl border border-stone-300 px-4 py-3 font-semibold text-stone-900 transition hover:bg-stone-100" type="submit">
+                        Add note
+                      </button>
+                    </form>
+                  </div>
+                </div>
+
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <PanelInset title="Related user" subtitle="Employee details and any devices already assigned to them.">
+                    <div className="space-y-4">
+                      <div className="rounded-2xl bg-stone-50 p-4">
+                        <p className="text-base font-semibold text-stone-900">{findEmployeeName(employees, selectedTicket.employeeId)}</p>
+                        <p className="mt-1 text-sm text-slate">{findEmployeeMeta(employees, selectedTicket.employeeId)}</p>
+                      </div>
+                      <div className="space-y-2">
+                        {assignedAssetsForSelectedEmployee.length > 0 ? (
+                          assignedAssetsForSelectedEmployee.map((asset) => (
+                            <div key={asset.id} className="rounded-2xl border border-stone-200 p-3">
+                              <p className="font-medium text-stone-900">{asset.assetTag} - {asset.assetType}</p>
+                              <p className="mt-1 text-sm text-slate">{asset.manufacturer} {asset.model} - {asset.healthStatus}</p>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-sm text-slate">No assigned devices for this employee.</p>
+                        )}
+                      </div>
+                    </div>
+                  </PanelInset>
+
+                  <PanelInset title="Asset inventory snapshot" subtitle="Quick view of stock status and warranty dates.">
+                    <div className="space-y-3">
+                      {assets.slice(0, 4).map((asset) => (
+                        <div key={asset.id} className="rounded-2xl border border-stone-200 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="font-medium text-stone-900">{asset.assetTag}</p>
+                            <p className="text-xs uppercase tracking-[0.12em] text-slate">{asset.status.replace("_", " ")}</p>
+                          </div>
+                          <p className="mt-1 text-sm text-slate">{asset.manufacturer} {asset.model}</p>
+                          <p className="mt-1 text-sm text-slate">Warranty until {new Date(asset.warrantyEndDate).toLocaleDateString()}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </PanelInset>
+                </div>
               </div>
             ) : (
               <p className="text-sm text-slate">Select a ticket to see details.</p>
@@ -322,12 +505,8 @@ export function App() {
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate">{article.category}</span>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-slate">{article.summary}</p>
-                    <p className="mt-3 text-sm text-stone-900">
-                      <span className="font-semibold">Symptoms:</span> {article.symptoms}
-                    </p>
-                    <p className="mt-2 text-sm text-stone-900">
-                      <span className="font-semibold">Suggested fix:</span> {article.recommendedFix}
-                    </p>
+                    <p className="mt-3 text-sm text-stone-900"><span className="font-semibold">Symptoms:</span> {article.symptoms}</p>
+                    <p className="mt-2 text-sm text-stone-900"><span className="font-semibold">Suggested fix:</span> {article.recommendedFix}</p>
                   </article>
                 ))}
               </div>
@@ -338,18 +517,6 @@ export function App() {
     </main>
   );
 }
-
-const priorityStyles: Record<TicketPriority, string> = {
-  low: "bg-emerald-100 text-emerald-800",
-  medium: "bg-amber-100 text-amber-800",
-  high: "bg-rose-100 text-rose-800"
-};
-
-const statusStyles: Record<TicketStatus, string> = {
-  open: "bg-sky-100 text-sky-800",
-  in_progress: "bg-amber-100 text-amber-800",
-  resolved: "bg-emerald-100 text-emerald-800"
-};
 
 function Panel(props: { title: string; subtitle: string; children: ReactNode }) {
   return (
@@ -371,10 +538,6 @@ function PanelInset(props: { title: string; subtitle: string; children: ReactNod
       <div className="mt-4">{props.children}</div>
     </section>
   );
-}
-
-function Badge(props: { children: ReactNode; className: string }) {
-  return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${props.className}`}>{props.children}</span>;
 }
 
 function Input(props: { label: string; name: string; placeholder?: string; type?: string; defaultValue?: string }) {
@@ -422,6 +585,10 @@ function Select(props: { label: string; name: string; children: ReactNode; defau
   );
 }
 
+function Badge(props: { children: ReactNode; className: string }) {
+  return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${props.className}`}>{props.children}</span>;
+}
+
 function InfoCard(props: { label: string; value: string }) {
   return (
     <article className="rounded-[1.5rem] border border-stone-200 bg-white p-4">
@@ -448,7 +615,18 @@ function findEmployeeMeta(employees: Employee[], employeeId: number | null) {
   return employee ? `${employee.roleTitle} - ${employee.department} - ${employee.location}` : "No requester linked yet.";
 }
 
+function findCategoryName(categories: Category[], categoryId: number | null) {
+  return categories.find((category) => category.id === categoryId)?.name ?? "Not assigned";
+}
+
 function findAssetName(assets: Asset[], assetId: number | null) {
   const asset = assets.find((entry) => entry.id === assetId);
   return asset ? `${asset.assetTag} - ${asset.manufacturer} ${asset.model}` : "No asset linked";
+}
+
+function toDateTimeLocalValue(value: string) {
+  const date = new Date(value);
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 16);
 }
